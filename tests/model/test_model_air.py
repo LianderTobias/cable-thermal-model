@@ -6,7 +6,6 @@
 import numpy as np
 import pandas as pd
 import pytest
-from pandera.typing import DataFrame
 
 from cable_thermal_model import CableLayer, CircuitType, ModelFactory, StaticEnvAir, StaticEnvSoil
 from cable_thermal_model.cable.cable_circuit import (
@@ -19,7 +18,6 @@ from cable_thermal_model.cable.schemas.circuit_schemas import (
 )
 from cable_thermal_model.model.model_air import ModelAir, StateAir
 from cable_thermal_model.model.model_soil import StateSoil
-from cable_thermal_model.model.schemas.model_input_schemas import ScenarioSchemaAir, ScenarioSchemaSoil
 from cable_thermal_model.validation.cable_analysis import CableAnalysis
 
 
@@ -56,8 +54,8 @@ def test_model_steady_state(
         },
     )
 
-    model = ModelAir(env, ScenarioSchemaAir.validate(scenario))
-    solution = model.run()
+    model = ModelAir(env)
+    solution = model.run(scenario)
     result = solution.result
     # First we get all the cables for test circuit 'c'
     circuit_c_cables = list(set(list(result.columns.get_level_values(1))))
@@ -90,7 +88,7 @@ def test_model_steady_state(
     assert np.isclose(total_heat_generation, heat_flow_for_sheath)
 
 
-def test_single_cable_in_air_compare_to_soil(scenario_steady_state: DataFrame[ScenarioSchemaSoil]):
+def test_single_cable_in_air_compare_to_soil(scenario_steady_state: pd.DataFrame):
     """Compare single cables in air and soil.
 
     When we ignore the effect of temperature-dependent resistance, the heat flux at the cable boundary should be
@@ -122,11 +120,17 @@ def test_single_cable_in_air_compare_to_soil(scenario_steady_state: DataFrame[Sc
     scenario_steady_state["load_c1"] = load
 
     # Compute the steady state solution for both environments
-    model_soil = ModelFactory.create_model(static_env_soil, scenario_steady_state)
-    steady_state_soil = model_soil.run(run_options={"temperature_dependent_electric_resistance": False}).state
+    model_soil = ModelFactory.create_model(static_env_soil)
+    steady_state_soil = model_soil.run(
+        scenario_steady_state,
+        run_options={"temperature_dependent_electric_resistance": False},
+    ).state
 
-    model_air = ModelFactory.create_model(static_env_air, ScenarioSchemaAir.validate(scenario_steady_state))
-    steady_state_air = model_air.run(run_options={"temperature_dependent_electric_resistance": False}).state
+    model_air = ModelFactory.create_model(static_env_air)
+    steady_state_air = model_air.run(
+        scenario_steady_state,
+        run_options={"temperature_dependent_electric_resistance": False},
+    ).state
 
     # Select the single cable from both circuits and collect their steady state solutions
     cable_key = CableKey(circuit_name="c1", cable_position=CablePosition.Single)
@@ -190,8 +194,10 @@ def test_model_air_validate_scenario_warns_for_unused_soil_columns(single_circui
         },
     )
 
+    model = ModelAir(single_circuit_in_air_env)
+
     with pytest.warns(UserWarning) as warnings_record:
-        _ = ModelAir(single_circuit_in_air_env, scenario)
+        model.run(scenario)
 
     warning_messages = [str(w.message) for w in warnings_record]
     assert any("soil_thermal_resistivity" in message for message in warning_messages)
@@ -216,12 +222,12 @@ def test_model_air_validate_state(single_core_cable_xlpe):
         data={"ambient_temperature": 30, f"load_{circuit_name}": 100.0},
     )
 
-    model = ModelAir(env, ScenarioSchemaAir.validate(scenario))
+    model = ModelAir(env)
     # Mock the output of model.compute_temperature_result() to prevent the need for a full model run
-    model._compute_temperature_solution = lambda initial_state: None
+    model._compute_temperature_solution = lambda scenario, initial_state: None
 
     # Test 1: state=None should pass
-    model.run(initial_state=None)
+    model.run(scenario, initial_state=None)
 
     # Test 2: state=StateAir instance should pass
     pos_cable = env.cables[CableKey(circuit_name=circuit_name, cable_position=CablePosition.Single)]
@@ -234,7 +240,7 @@ def test_model_air_validate_state(single_core_cable_xlpe):
         ambient_temperature=0.0,
     )
 
-    model.run(initial_state=valid_state)
+    model.run(scenario, initial_state=valid_state)
 
     # Test 3: state=StateSoil instance should raise ValueError
     invalid_state_soil = StateSoil(
@@ -246,7 +252,7 @@ def test_model_air_validate_state(single_core_cable_xlpe):
     )
 
     with pytest.raises(ValueError, match="ModelAir requires a StateAir instance, but received StateSoil"):
-        model.run(initial_state=invalid_state_soil)
+        model.run(scenario, initial_state=invalid_state_soil)
 
 
 def test_use_wrong_static_env_type():
@@ -258,4 +264,4 @@ def test_use_wrong_static_env_type():
             "environment in air. Please use ModelSoil instead."
         ),
     ):
-        ModelAir(static_env=StaticEnvSoil(), scenario=pd.DataFrame())
+        ModelAir(static_env=StaticEnvSoil())
